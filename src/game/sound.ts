@@ -75,8 +75,13 @@ class SoundEngine {
   private muted = false
 
   constructor() {
-    if (typeof window !== 'undefined') {
+    // Some embeddings (thumbnail capture, blocked site data) throw on the
+    // storage accessor itself, and this runs at module load — an unguarded
+    // read would take the whole page down with it.
+    try {
       this.muted = window.localStorage.getItem(MUTE_KEY) === '1'
+    } catch {
+      this.muted = false
     }
   }
 
@@ -86,8 +91,10 @@ class SoundEngine {
 
   setMuted(muted: boolean): void {
     this.muted = muted
-    if (typeof window !== 'undefined') {
+    try {
       window.localStorage.setItem(MUTE_KEY, muted ? '1' : '0')
+    } catch {
+      /* preference simply will not persist */
     }
     if (this.master && this.ctx) {
       this.master.gain.setTargetAtTime(muted ? 0 : 0.9, this.ctx.currentTime, 0.02)
