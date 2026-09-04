@@ -1,11 +1,22 @@
 import { create } from 'zustand'
 import { LEVELS, TOTAL_LEVELS, levelAt } from './levels'
+import {
+  DOORS,
+  EXTRACTION_TILES,
+  areaAt,
+  findPath,
+  openDoorTiles,
+  sameTile,
+} from './map'
+import { normaliseAppearance } from './appearance'
 import { DEFAULT_CALIBRATION, expectedAnswer, normalise } from './scene'
 import { getSkill } from './skills'
 import { sound } from './sound'
 import type {
   Calibration,
   Level,
+  Vec,
+  WalkState,
   LevelResult,
   LogEntry,
   LogTone,
@@ -29,6 +40,10 @@ export const MISS_TIME_PENALTY = 10
 export const OVERRIDE_SECONDS = 45
 export const MAX_PLAYERS = 6
 export const MIN_PLAYERS = 2
+/** Seconds burned per tile walked. Routing is part of the puzzle. */
+export const STEP_COST = 1
+/** Milliseconds per tile while a token is walking. */
+export const STEP_MS = 95
 
 export interface Feedback {
   kind: 'good' | 'bad' | 'skill' | null
@@ -62,6 +77,16 @@ interface GameState {
   deviceHolderId: string | null
   secondsLeft: number
   clockRunning: boolean
+
+  // ---- floor ----
+  positions: Record<string, Vec>
+  /** Whose token the map controls right now (shared-screen mode). */
+  moverId: string | null
+  walking: WalkState | null
+  /** Station ids cleared this run; these are what unseal doors. */
+  clearedStations: string[]
+  /** Every lock is done but the crew still has to reach the lift. */
+  extractionPending: boolean
 
   // ---- scoring for the level in progress ----
   levelPenalty: number
@@ -106,6 +131,9 @@ interface GameState {
   // ---- play actions ----
   selectStation: (id: string) => void
   handDeviceTo: (playerId: string) => void
+  setMover: (playerId: string) => void
+  walkTo: (target: Vec) => void
+  advanceWalk: () => void
   useSkill: (playerId: string, stationId?: string) => void
   submitEntry: (stationId: string, raw: string) => boolean
   submitTerminal: (raw: string) => TerminalReply
@@ -132,7 +160,10 @@ function loadSetup(): PersistedSetup | null {
     const parsed = JSON.parse(raw) as Partial<PersistedSetup>
     if (!Array.isArray(parsed.players)) return null
     return {
-      players: parsed.players.slice(0, MAX_PLAYERS),
+      players: parsed.players.slice(0, MAX_PLAYERS).map((p, i) => ({
+        ...p,
+        appearance: normaliseAppearance(p.appearance, i),
+      })),
       mode: parsed.mode === 'shared' ? 'shared' : 'hotseat',
       calibration: { ...DEFAULT_CALIBRATION, ...(parsed.calibration ?? {}) },
     }
@@ -196,6 +227,15 @@ function assignStations(
   return out
 }
 
+function placeAtSpawns(players: Player[], spawns: Vec[]): Record<string, Vec> {
+  const out: Record<string, Vec> = {}
+  players.forEach((p, i) => {
+    const spawn = spawns[i % spawns.length]
+    if (spawn) out[p.id] = { ...spawn }
+  })
+  return out
+}
+
 function freshCharges(players: Player[]): Record<string, boolean> {
   const out: Record<string, boolean> = {}
   for (const p of players) out[p.id] = true
@@ -232,6 +272,54 @@ function activeLock(
   )
 }
 
+export interface Presence {
+  /** The assigned operator is standing on the lock tile. */
+  operatorReady: boolean
+  /** A second player is covering the clue tile (or none is needed). */
+  assistReady: boolean
+  /** Who is currently covering the clue tile, if anyone. */
+  assistId: string | null
+  /** In hotseat, the device is with the operator. */
+  deviceReady: boolean
+  ready: boolean
+}
+
+export function presenceFor(
+  station: Station,
+  runtime: Record<string, StationRuntime>,
+  positions: Record<string, Vec>,
+  players: Player[],
+  mode: PlayMode,
+  deviceHolderId: string | null,
+): Presence {
+  const operatorId = runtime[station.id]?.playerId ?? ''
+  const operatorReady = sameTile(positions[operatorId], station.lockAt)
+  const assist = station.clueAt
+    ? players.find(
+        (p) => p.id !== operatorId && sameTile(positions[p.id], station.clueAt),
+      ) ?? null
+    : null
+  const assistReady = station.clueAt ? assist !== null : true
+  const deviceReady = mode === 'shared' || deviceHolderId === operatorId
+  return {
+    operatorReady,
+    assistReady,
+    assistId: assist?.id ?? null,
+    deviceReady,
+    ready: operatorReady && assistReady && deviceReady,
+  }
+}
+
+export function everyoneExtracted(
+  players: Player[],
+  positions: Record<string, Vec>,
+): boolean {
+  if (players.length === 0) return false
+  return players.every((p) =>
+    EXTRACTION_TILES.some((tile) => sameTile(positions[p.id], tile)),
+  )
+}
+
 export function answerFor(station: Station, calibration: Calibration): string {
   switch (station.kind) {
     case 'keypad':
@@ -260,10 +348,30 @@ export const useGame = create<GameState>()((set, get) => {
     }
   }
 
+  /** Say which doors a freshly cleared checkpoint just unsealed. */
+  function announceDoors(stationId: string): void {
+    const opened = DOORS.filter((d) => d.opensWith === stationId)
+    for (const door of opened) {
+      get().pushLog(`${door.label} door unsealed.`, 'system')
+    }
+  }
+
   function bankLevelIfCleared(): void {
     const s = get()
     const level = levelAt(s.levelIndex)
     if (!level.stations.every((st) => s.stations[st.id]?.solved)) return
+
+    if (level.requiresExtraction && !everyoneExtracted(s.players, s.positions)) {
+      if (!s.extractionPending) {
+        set({ extractionPending: true })
+        get().pushLog(
+          'Locks are open and the lift lobby is unsealed. Get every last person onto a pad.',
+          'system',
+        )
+        sound.play('alarm')
+      }
+      return
+    }
 
     const base = Math.max(
       0,
@@ -283,6 +391,8 @@ export const useGame = create<GameState>()((set, get) => {
     set({
       clockRunning: false,
       phase: 'debrief',
+      extractionPending: false,
+      walking: null,
       totalScore: s.totalScore + award,
       lastLevelScore: award,
       results: [...s.results.filter((r) => r.levelId !== level.id), result],
@@ -307,6 +417,8 @@ export const useGame = create<GameState>()((set, get) => {
     }
     set({
       clockRunning: false,
+      walking: null,
+      extractionPending: false,
       strikesLeft,
       lastLevelScore: 0,
       results: [...s.results.filter((r) => r.levelId !== level.id), result],
@@ -331,6 +443,16 @@ export const useGame = create<GameState>()((set, get) => {
     if (!station || !rt || rt.solved || station.kind === 'skill') return false
     if (isGated(station, s.stations)) return false
 
+    const presence = presenceFor(
+      station,
+      s.stations,
+      s.positions,
+      s.players,
+      s.mode,
+      s.deviceHolderId,
+    )
+    if (!presence.ready) return false
+
     const player = s.players.find((p) => p.id === rt.playerId)
     const correct =
       normalise(raw) === normalise(answerFor(station, s.calibration))
@@ -343,7 +465,11 @@ export const useGame = create<GameState>()((set, get) => {
         },
         feedback: { kind: 'good', nonce: s.feedback.nonce + 1 },
         stats: bumpStat(s.stats, rt.playerId, 'solves'),
+        clearedStations: s.clearedStations.includes(stationId)
+          ? s.clearedStations
+          : [...s.clearedStations, stationId],
       })
+      announceDoors(stationId)
       get().pushLog(
         `${station.title} verified — ${player?.name ?? 'operator'} got it.`,
         'good',
@@ -393,6 +519,12 @@ export const useGame = create<GameState>()((set, get) => {
     deviceHolderId: null,
     secondsLeft: LEVELS[0]?.duration ?? 300,
     clockRunning: false,
+
+    positions: {},
+    moverId: null,
+    walking: null,
+    clearedStations: [],
+    extractionPending: false,
 
     levelPenalty: 0,
     levelMisses: 0,
@@ -481,6 +613,11 @@ export const useGame = create<GameState>()((set, get) => {
         log: [],
         levelIndex: 0,
         clockRunning: false,
+        positions: {},
+        moverId: null,
+        walking: null,
+        clearedStations: [],
+        extractionPending: false,
       })
       get().pushLog(
         `Crew of ${players.length} clocked in. Lockdown arms in three stages.`,
@@ -489,16 +626,25 @@ export const useGame = create<GameState>()((set, get) => {
     },
 
     startLevel(index) {
-      const { players } = get()
+      const { players, clearedStations } = get()
       const level = levelAt(index)
       const stations = assignStations(level.stations, players)
       const first = firstOpenStation(level, stations)
+      const stageIds = new Set(level.stations.map((st) => st.id))
+      const operator = first ? stations[first]?.playerId ?? null : null
       set({
         phase: 'level',
         levelIndex: index,
         stations,
         activeStationId: first,
-        deviceHolderId: first ? stations[first]?.playerId ?? null : null,
+        deviceHolderId: operator,
+        // Everyone is repositioned at the stage entrance, so re-locking a door
+        // can never strand somebody outside the room they need.
+        positions: placeAtSpawns(players, level.spawns),
+        moverId: operator,
+        walking: null,
+        extractionPending: false,
+        clearedStations: clearedStations.filter((id) => !stageIds.has(id)),
         secondsLeft: level.duration,
         clockRunning: true,
         levelPenalty: 0,
@@ -548,6 +694,11 @@ export const useGame = create<GameState>()((set, get) => {
         log: [],
         levelIndex: 0,
         clockRunning: false,
+        positions: {},
+        moverId: null,
+        walking: null,
+        clearedStations: [],
+        extractionPending: false,
       })
       get().pushLog('Shift reset. Same crew, fresh lockdown.', 'system')
     },
@@ -565,21 +716,72 @@ export const useGame = create<GameState>()((set, get) => {
         activeStationId: null,
         deviceHolderId: null,
         sceneOpen: false,
+        positions: {},
+        moverId: null,
+        walking: null,
+        clearedStations: [],
+        extractionPending: false,
       })
     },
 
     selectStation(id) {
-      const { stations, mode } = get()
-      const rt = stations[id]
-      if (!rt) return
+      const { stations } = get()
+      if (!stations[id]) return
       sound.play('click')
+      // Focus only. Handing the device over is always an explicit act, so
+      // tapping a checkpoint on the map never hijacks who you are moving.
       set({ activeStationId: id })
-      if (mode === 'hotseat') set({ deviceHolderId: rt.playerId })
     },
 
     handDeviceTo(playerId) {
       sound.play('pass')
-      set({ deviceHolderId: playerId })
+      // Whoever holds the device is also who the map moves.
+      set({ deviceHolderId: playerId, moverId: playerId, walking: null })
+    },
+
+    setMover(playerId) {
+      sound.play('click')
+      set({ moverId: playerId, walking: null })
+    },
+
+    walkTo(target) {
+      const s = get()
+      if (s.phase !== 'level' || s.walking) return
+      const moverId = s.mode === 'hotseat' ? s.deviceHolderId : s.moverId
+      const from = moverId ? s.positions[moverId] : undefined
+      if (!moverId || !from) return
+      const path = findPath(from, target, openDoorTiles(s.clearedStations))
+      if (!path || path.length === 0) {
+        if (path === null) sound.play('wrong')
+        return
+      }
+      sound.play('node')
+      set({ walking: { playerId: moverId, path, index: 0 } })
+    },
+
+    advanceWalk() {
+      const s = get()
+      const walk = s.walking
+      if (!walk || s.phase !== 'level') return
+      const next = walk.path[walk.index]
+      if (!next) {
+        set({ walking: null })
+        return
+      }
+      const done = walk.index + 1 >= walk.path.length
+      set({
+        positions: { ...s.positions, [walk.playerId]: next },
+        walking: done ? null : { ...walk, index: walk.index + 1 },
+        secondsLeft: Math.max(1, s.secondsLeft - STEP_COST),
+      })
+      if (done) {
+        const after = get()
+        const who = after.players.find((p) => p.id === walk.playerId)
+        if (who) {
+          get().pushLog(`${who.name} moved to the ${areaAt(next)}.`, 'info', who.name)
+        }
+        if (after.extractionPending) bankLevelIfCleared()
+      }
     },
 
     useSkill(playerId, stationId) {
@@ -611,14 +813,27 @@ export const useGame = create<GameState>()((set, get) => {
       const skill = getSkill(player.skillId)
       let stations = s.stations
       let stats = bumpStat(s.stats, playerId, 'skillUses')
+      let clearedNow = s.clearedStations
 
       if (stationId) {
         const station = level.stations.find((st) => st.id === stationId)
         const rt = stations[stationId]
         if (!station || station.kind !== 'skill' || !rt || rt.solved) return
         if (isGated(station, stations)) return
+        const presence = presenceFor(
+          station,
+          stations,
+          s.positions,
+          s.players,
+          s.mode,
+          s.deviceHolderId,
+        )
+        if (!presence.ready) return
         stations = { ...stations, [stationId]: { ...rt, solved: true } }
         stats = bumpStat(stats, playerId, 'solves')
+        clearedNow = s.clearedStations.includes(stationId)
+          ? s.clearedStations
+          : [...s.clearedStations, stationId]
         get().pushLog(
           `${station.title} online — ${player.name} pushed it through.`,
           'good',
@@ -733,10 +948,12 @@ export const useGame = create<GameState>()((set, get) => {
         hintedStations,
         doubled,
         shields,
+        clearedStations: clearedNow,
         charges: { ...s.charges, [playerId]: false },
         levelSkillsUsed: [...s.levelSkillsUsed, player.skillId],
         feedback: { kind: 'skill', nonce: s.feedback.nonce + 1 },
       })
+      if (stationId) announceDoors(stationId)
       sound.play('skill')
       refocus()
       bankLevelIfCleared()
@@ -820,14 +1037,40 @@ export const useGame = create<GameState>()((set, get) => {
         }
       }
 
-      if (s.mode === 'hotseat' && s.deviceHolderId !== rt?.playerId) {
-        const who = s.players.find((p) => p.id === rt?.playerId)
+      const presence = presenceFor(
+        station,
+        s.stations,
+        s.positions,
+        s.players,
+        s.mode,
+        s.deviceHolderId,
+      )
+      const owner = s.players.find((p) => p.id === rt?.playerId)
+      if (!presence.deviceReady) {
         sound.play('wrong')
         return {
           ok: false,
           message: `${command.toLowerCase()}: permission denied — ${
-            who?.name ?? 'another operator'
+            owner?.name ?? 'another operator'
           } owns this command`,
+        }
+      }
+      if (!presence.operatorReady) {
+        sound.play('wrong')
+        return {
+          ok: false,
+          message: `${command.toLowerCase()}: no session — ${
+            owner?.name ?? 'the operator'
+          } is not at the terminal`,
+        }
+      }
+      if (!presence.assistReady) {
+        sound.play('wrong')
+        return {
+          ok: false,
+          message: `${command.toLowerCase()}: unverified — nobody is at the ${
+            station.clueLabel ?? 'reference point'
+          }`,
         }
       }
 

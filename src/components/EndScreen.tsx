@@ -2,6 +2,7 @@ import { LEVELS } from '../game/levels'
 import { getSkill } from '../game/skills'
 import { useGame } from '../game/store'
 import { Button, Chip, Panel, SectionLabel } from './ui/kit'
+import { CharacterAvatar } from './CharacterAvatar'
 
 interface EndScreenProps {
   outcome: 'victory' | 'failure'
@@ -128,7 +129,12 @@ export function EndScreen({ outcome }: EndScreenProps) {
                     <tr key={player.id} className="border-b border-hairline-soft">
                       <td className="py-2.5">
                         <div className="flex items-center gap-2">
-                          <span aria-hidden>{player.avatar}</span>
+                          <CharacterAvatar
+                            appearance={player.appearance}
+                            accent={player.accent}
+                            size="sm"
+                            title={player.name}
+                          />
                           <span className="text-[13px] font-semibold text-ink">
                             {player.name}
                           </span>

@@ -1,14 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { levelAt } from '../game/levels'
-import { HINT_COST, MAX_STRIKES, answerFor, isGated, useGame } from '../game/store'
+import {
+  HINT_COST,
+  MAX_STRIKES,
+  STEP_MS,
+  answerFor,
+  isGated,
+  presenceFor,
+  useGame,
+} from '../game/store'
 import { checksumFormula, digitSum } from '../game/scene'
+import { areaAt } from '../game/map'
 import { getSkill } from '../game/skills'
 import { sound } from '../game/sound'
 import type { Level, Station } from '../game/types'
 import { Button, Chip, Meter, Panel, SectionLabel } from './ui/kit'
 import { Keypad } from './Keypad'
 import { LogFeed } from './LogFeed'
-import { PassDeviceGate } from './PassDeviceGate'
+import { CharacterAvatar } from './CharacterAvatar'
+import { FloorMap } from './FloorMap'
+import { StationRequirements } from './StationRequirements'
 import { PatternGrid } from './PatternGrid'
 import { SkillBar } from './SkillBar'
 import { Terminal } from './Terminal'
@@ -49,6 +60,7 @@ export function LevelScreen() {
   const stations = useGame((s) => s.stations)
   const activeStationId = useGame((s) => s.activeStationId)
   const deviceHolderId = useGame((s) => s.deviceHolderId)
+  const moverId = useGame((s) => s.moverId)
   const secondsLeft = useGame((s) => s.secondsLeft)
   const clockRunning = useGame((s) => s.clockRunning)
   const charges = useGame((s) => s.charges)
@@ -62,9 +74,14 @@ export function LevelScreen() {
   const log = useGame((s) => s.log)
   const feedback = useGame((s) => s.feedback)
   const sceneOpen = useGame((s) => s.sceneOpen)
+  const positions = useGame((s) => s.positions)
+  const walking = useGame((s) => s.walking)
+  const extractionPending = useGame((s) => s.extractionPending)
+  const advanceWalk = useGame((s) => s.advanceWalk)
 
   const selectStation = useGame((s) => s.selectStation)
   const handDeviceTo = useGame((s) => s.handDeviceTo)
+  const setMover = useGame((s) => s.setMover)
   const useSkill = useGame((s) => s.useSkill)
   const submitEntry = useGame((s) => s.submitEntry)
   const submitTerminal = useGame((s) => s.submitTerminal)
@@ -74,7 +91,6 @@ export function LevelScreen() {
   const hardReset = useGame((s) => s.hardReset)
 
   const [quitOpen, setQuitOpen] = useState(false)
-  const [gateAccepted, setGateAccepted] = useState<string | null>(null)
   const [muted, setMuted] = useState(sound.isMuted)
 
   const level = levelAt(levelIndex)
@@ -90,16 +106,28 @@ export function LevelScreen() {
     return () => window.clearInterval(id)
   }, [clockRunning, tick])
 
-  // A new station means the device has to physically move again.
+  // Walk the selected token one tile at a time so the move reads as movement.
+  // The effect keys off whether a walk is in progress, not the walk object —
+  // otherwise the interval is torn down and rebuilt on every single step.
+  const isWalking = Boolean(walking)
   useEffect(() => {
-    setGateAccepted(null)
-  }, [activeStationId])
+    if (!isWalking) return
+    const id = window.setInterval(() => advanceWalk(), STEP_MS)
+    return () => window.clearInterval(id)
+  }, [isWalking, advanceWalk])
 
-  const gateNeeded =
-    mode === 'hotseat' &&
-    Boolean(operator) &&
-    gateAccepted !== activeStationId &&
-    !activeRuntime?.solved
+  const presence =
+    activeStation && operator
+      ? presenceFor(
+          activeStation,
+          stations,
+          positions,
+          players,
+          mode,
+          deviceHolderId,
+        )
+      : null
+  const locked = !presence?.ready || isWalking
 
   const reservedIds = useMemo(
     () =>
@@ -208,10 +236,14 @@ export function LevelScreen() {
           <Button
             tone="primary"
             size="lg"
-            disabled={spent}
+            disabled={spent || locked}
             onClick={() => useSkill(operator.id, activeStation.id)}
           >
-            {spent ? 'Charge already spent' : `${operator.name} — spend the charge`}
+            {spent
+              ? 'Charge already spent'
+              : locked
+                ? 'Get into position first'
+                : `${operator.name} — spend the charge`}
           </Button>
           {spent ? (
             <p className="max-w-xs text-[11px] leading-relaxed text-flare">
@@ -231,7 +263,7 @@ export function LevelScreen() {
             index,
             digit: answer[index] ?? '?',
           }))}
-          disabled={gateNeeded || sceneOpen}
+          disabled={locked || sceneOpen}
           onSubmit={(value) => submitEntry(activeStation.id, value)}
         />
       )
@@ -245,17 +277,20 @@ export function LevelScreen() {
             step,
             cell: Number(answer[step] ?? -1),
           }))}
-          disabled={gateNeeded || sceneOpen}
+          disabled={locked || sceneOpen}
           onSubmit={(cells) => submitEntry(activeStation.id, cells.join(''))}
         />
       )
     }
 
+    // The shell stays typeable even when the crew is out of position: being
+    // told "no session — Marcus is not at the terminal" by the terminal itself
+    // beats a greyed-out box.
     return (
       <Terminal
         operator={operator.name}
         banner={terminalBanner(level)}
-        disabled={gateNeeded}
+        disabled={Boolean(walking) || sceneOpen}
         onCommand={submitTerminal}
       />
     )
@@ -302,7 +337,7 @@ export function LevelScreen() {
                 className="w-28"
               />
               <span className="font-mono text-[10px] text-ink-faint">
-                {solvedCount}/{level.stations.length} stations
+                {solvedCount}/{level.stations.length} checkpoints
               </span>
             </div>
           </div>
@@ -362,8 +397,20 @@ export function LevelScreen() {
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="space-y-4">
-          {/* ---- station rail ---- */}
+        <div className="min-w-0 space-y-4">
+          {/* ---- the floor ---- */}
+          <Panel className="p-4">
+            <FloorMap />
+            {extractionPending ? (
+              <p className="animate-rise mt-3 rounded-lg border border-neon/40 bg-neon/8 p-2.5 text-[12px] leading-relaxed text-neon">
+                <strong className="font-semibold">Alarm disarmed.</strong> The lift
+                lobby is open — the stage does not close until every single person is
+                standing on a pad.
+              </p>
+            ) : null}
+          </Panel>
+
+          {/* ---- checkpoint rail ---- */}
           <div className="flex gap-2 overflow-x-auto pb-1">
             {level.stations.map((station, i) => {
               const rt = stations[station.id]
@@ -404,15 +451,28 @@ export function LevelScreen() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span aria-hidden className="text-[13px]">
-                      {who?.avatar ?? '·'}
-                    </span>
+                    {who ? (
+                      <CharacterAvatar
+                        appearance={who.appearance}
+                        accent={who.accent}
+                        size="token"
+                        title={who.name}
+                      />
+                    ) : null}
                     <span
                       className="truncate font-mono text-[9px] uppercase tracking-[0.12em]"
                       style={{ color: who?.accent ?? '#5d6780' }}
                     >
                       {who?.name ?? 'unassigned'}
                     </span>
+                    {station.clueAt && !rt?.solved ? (
+                      <span
+                        className="ml-auto font-mono text-[9px] text-cyan-signal"
+                        title={`Needs a second player at the ${station.clueLabel}`}
+                      >
+                        +1
+                      </span>
+                    ) : null}
                   </div>
                 </button>
               )
@@ -421,16 +481,6 @@ export function LevelScreen() {
 
           {/* ---- active station ---- */}
           <Panel className="relative p-5">
-            <PassDeviceGate
-              open={gateNeeded && Boolean(operator)}
-              target={operator ?? players[0]!}
-              stationTitle={activeStation?.title ?? ''}
-              onConfirm={() => {
-                if (operator) handDeviceTo(operator.id)
-                setGateAccepted(activeStationId)
-              }}
-            />
-
             {activeStation ? (
               <>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -457,6 +507,17 @@ export function LevelScreen() {
                     {activeStation.lookAt}
                   </span>
                 </p>
+
+                {presence && operator && !activeRuntime?.solved ? (
+                  <div className="mt-4">
+                    <StationRequirements
+                      station={activeStation}
+                      operator={operator}
+                      presence={presence}
+                      hotseat={mode === 'hotseat'}
+                    />
+                  </div>
+                ) : null}
 
                 <div className="mt-5">{renderLock()}</div>
 
@@ -485,7 +546,7 @@ export function LevelScreen() {
         </div>
 
         {/* ---- right column ---- */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <Panel className="p-4">
             <SkillBar
               players={players}
@@ -495,27 +556,44 @@ export function LevelScreen() {
               hotseat={mode === 'hotseat'}
               onUse={(playerId) => useSkill(playerId)}
             />
-            {mode === 'hotseat' ? (
-              <div className="mt-3 border-t border-hairline pt-3">
-                <div className="label-caps mb-1.5">Hand the device over</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {players.map((player) => (
+            <div className="mt-3 border-t border-hairline pt-3">
+              <div className="label-caps mb-1.5">
+                {mode === 'hotseat' ? 'Hand the device over' : 'Whose token to move'}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {players.map((player) => {
+                  const controlled =
+                    (mode === 'hotseat' ? deviceHolderId : moverId) === player.id
+                  const pos = positions[player.id]
+                  return (
                     <button
                       key={player.id}
                       type="button"
-                      onClick={() => handDeviceTo(player.id)}
-                      className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors ${
-                        deviceHolderId === player.id
+                      onClick={() =>
+                        mode === 'hotseat'
+                          ? handDeviceTo(player.id)
+                          : setMover(player.id)
+                      }
+                      aria-label={`Control ${player.name}`}
+                      title={pos ? `In the ${areaAt(pos)}` : 'Off the floor'}
+                      className={`flex items-center gap-1.5 rounded-md border px-1.5 py-1 font-mono text-[10px] transition-colors ${
+                        controlled
                           ? 'border-neon/60 bg-neon/10 text-neon'
                           : 'border-hairline text-ink-faint hover:text-ink'
                       }`}
                     >
-                      {player.avatar} {player.name}
+                      <CharacterAvatar
+                        appearance={player.appearance}
+                        accent={player.accent}
+                        size="token"
+                        title={player.name}
+                      />
+                      {player.name}
                     </button>
-                  ))}
-                </div>
+                  )
+                })}
               </div>
-            ) : null}
+            </div>
           </Panel>
 
           {chain.length > 0 ? (

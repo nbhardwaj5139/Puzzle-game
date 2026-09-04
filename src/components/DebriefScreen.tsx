@@ -3,6 +3,7 @@ import { getSkill } from '../game/skills'
 import { useGame } from '../game/store'
 import { Button, Chip, Panel, SectionLabel } from './ui/kit'
 import { LogFeed } from './LogFeed'
+import { CharacterAvatar } from './CharacterAvatar'
 
 export function DebriefScreen() {
   const levelIndex = useGame((s) => s.levelIndex)
@@ -135,9 +136,13 @@ export function DebriefScreen() {
               crew of {players.length}
             </span>
             {players.map((p) => (
-              <span key={p.id} aria-hidden title={p.name} className="text-lg">
-                {p.avatar}
-              </span>
+              <CharacterAvatar
+                key={p.id}
+                appearance={p.appearance}
+                accent={p.accent}
+                size="sm"
+                title={p.name}
+              />
             ))}
           </div>
         </div>

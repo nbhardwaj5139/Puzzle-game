@@ -1,8 +1,20 @@
 import { useState } from 'react'
 import { ACCENTS, AVATARS, ROLE_SUGGESTIONS, SKILL_LABEL_SUGGESTIONS } from '../game/avatars'
+import {
+  ACCESSORIES,
+  HAIR_COLOURS,
+  HAIR_STYLES,
+  OUTFITS,
+  SKIN_TONES,
+  defaultAppearance,
+  hairHex,
+  randomAppearance,
+  skinHex,
+} from '../game/appearance'
+import { CharacterAvatar } from './CharacterAvatar'
 import { SKILLS, getSkill } from '../game/skills'
 import { MAX_PLAYERS, MIN_PLAYERS, useGame } from '../game/store'
-import type { Player, SkillId } from '../game/types'
+import type { Appearance, Player, SkillId } from '../game/types'
 import { Button, Chip, Field, Panel, SectionLabel, inputClass } from './ui/kit'
 import { RealityCheckPanel } from './RealityCheckPanel'
 
@@ -13,6 +25,7 @@ interface Draft {
   skillId: SkillId
   avatar: string
   accent: string
+  appearance: Appearance
 }
 
 function emptyDraft(index: number): Draft {
@@ -23,6 +36,7 @@ function emptyDraft(index: number): Draft {
     skillId: SKILLS[index % SKILLS.length]?.id ?? 'decrypt',
     avatar: AVATARS[index % AVATARS.length] ?? '🧑‍💻',
     accent: ACCENTS[index % ACCENTS.length] ?? '#35f2c0',
+    appearance: defaultAppearance(index),
   }
 }
 
@@ -65,6 +79,7 @@ export function RosterScreen() {
       skillId: draft.skillId,
       avatar: draft.avatar,
       accent: draft.accent,
+      appearance: draft.appearance,
     }
     if (editingId) {
       updatePlayer(editingId, payload)
@@ -85,6 +100,7 @@ export function RosterScreen() {
       skillId: player.skillId,
       avatar: player.avatar,
       accent: player.accent,
+      appearance: player.appearance,
     })
   }
 
@@ -132,21 +148,31 @@ export function RosterScreen() {
               >
                 <div className="flex items-start gap-4">
                   <div
-                    className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border text-2xl"
+                    className="flex h-16 w-16 shrink-0 items-end justify-center overflow-hidden rounded-xl border"
                     style={{
                       borderColor: `${player.accent}66`,
                       backgroundColor: `${player.accent}14`,
                       boxShadow: `0 0 26px -12px ${player.accent}`,
                     }}
                   >
-                    <span aria-hidden>{player.avatar}</span>
+                    <CharacterAvatar
+                      appearance={player.appearance}
+                      accent={player.accent}
+                      size="md"
+                      title={player.name}
+                    />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-[10px] text-ink-faint">
                         P{i + 1}
                       </span>
-                      <h3 className="text-base font-bold text-ink">{player.name}</h3>
+                      <h3 className="text-base font-bold text-ink">
+                        <span aria-hidden className="mr-1">
+                          {player.avatar}
+                        </span>
+                        {player.name}
+                      </h3>
                       <Chip>{player.role}</Chip>
                       <Chip accent={skill.accent}>
                         {skill.glyph} {skill.name}
@@ -234,8 +260,8 @@ export function RosterScreen() {
                 <SectionLabel>Step 3 — clock in</SectionLabel>
                 <p className="mt-1 text-sm text-ink-soft">
                   {canStart
-                    ? `${players.length} operators ready. Stations are dealt round-robin at the start of each level.`
-                    : `Add at least ${MIN_PLAYERS} operators — no level in this game can be cleared alone.`}
+                    ? `${players.length} operators ready. Checkpoints are dealt round-robin at the start of each stage.`
+                    : `Add at least ${MIN_PLAYERS} operators — no checkpoint in this game can be cleared alone.`}
                 </p>
               </div>
               <Button
@@ -338,8 +364,169 @@ export function RosterScreen() {
               </div>
             </div>
 
+            {/* ---- look ---- */}
+            <div className="rounded-xl border border-hairline bg-carbon/60 p-3">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-24 w-24 shrink-0 items-end justify-center overflow-hidden rounded-xl border"
+                  style={{
+                    borderColor: `${draft.accent}55`,
+                    backgroundColor: `${draft.accent}12`,
+                  }}
+                >
+                  <CharacterAvatar
+                    appearance={draft.appearance}
+                    accent={draft.accent}
+                    size="lg"
+                    title="Character preview"
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="label-caps mb-1 block">Look</span>
+                  <p className="text-[11px] leading-relaxed text-ink-faint">
+                    This is the token you move around the floor, so make them easy to
+                    pick out from across the table.
+                  </p>
+                  <Button
+                    size="sm"
+                    className="mt-2"
+                    onClick={() =>
+                      setDraft((d) => ({ ...d, appearance: randomAppearance() }))
+                    }
+                  >
+                    🎲 Randomise
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-3">
+                <div>
+                  <span className="label-caps mb-1.5 block">Skin</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SKIN_TONES.map((tone) => (
+                      <button
+                        key={tone.id}
+                        type="button"
+                        aria-label={`Skin ${tone.id}`}
+                        title={tone.id}
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            appearance: { ...d.appearance, skin: tone.id },
+                          }))
+                        }
+                        className={`h-7 w-7 rounded-full border-2 transition-transform ${
+                          draft.appearance.skin === tone.id
+                            ? 'scale-110 border-ink'
+                            : 'border-transparent hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: skinHex(tone.id) }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="label-caps mb-1.5 block">Hair</span>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {HAIR_STYLES.map((style) => (
+                      <button
+                        key={style.id}
+                        type="button"
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            appearance: { ...d.appearance, hair: style.id },
+                          }))
+                        }
+                        className={`rounded-md border py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors ${
+                          draft.appearance.hair === style.id
+                            ? 'border-neon bg-neon/10 text-neon'
+                            : 'border-hairline text-ink-faint hover:text-ink'
+                        }`}
+                      >
+                        {style.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {HAIR_COLOURS.map((colour) => (
+                      <button
+                        key={colour.id}
+                        type="button"
+                        aria-label={`Hair ${colour.id}`}
+                        title={colour.id}
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            appearance: { ...d.appearance, hairColour: colour.id },
+                          }))
+                        }
+                        className={`h-6 w-6 rounded-full border-2 transition-transform ${
+                          draft.appearance.hairColour === colour.id
+                            ? 'scale-110 border-ink'
+                            : 'border-transparent hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: hairHex(colour.id) }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="label-caps mb-1.5 block">Outfit</span>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {OUTFITS.map((outfit) => (
+                      <button
+                        key={outfit.id}
+                        type="button"
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            appearance: { ...d.appearance, outfit: outfit.id },
+                          }))
+                        }
+                        className={`rounded-md border py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors ${
+                          draft.appearance.outfit === outfit.id
+                            ? 'border-neon bg-neon/10 text-neon'
+                            : 'border-hairline text-ink-faint hover:text-ink'
+                        }`}
+                      >
+                        {outfit.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="label-caps mb-1.5 block">Accessory</span>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {ACCESSORIES.map((accessory) => (
+                      <button
+                        key={accessory.id}
+                        type="button"
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            appearance: { ...d.appearance, accessory: accessory.id },
+                          }))
+                        }
+                        className={`rounded-md border py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors ${
+                          draft.appearance.accessory === accessory.id
+                            ? 'border-neon bg-neon/10 text-neon'
+                            : 'border-hairline text-ink-faint hover:text-ink'
+                        }`}
+                      >
+                        {accessory.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div>
-              <span className="label-caps mb-1.5 block">Avatar</span>
+              <span className="label-caps mb-1.5 block">Badge sticker</span>
               <div className="grid grid-cols-8 gap-1.5">
                 {AVATARS.map((avatar) => (
                   <button

@@ -1,3 +1,24 @@
+import type {
+  AccessoryId,
+  HairColourId,
+  HairStyleId,
+  OutfitId,
+  SkinToneId,
+} from './appearance'
+
+export interface Vec {
+  x: number
+  y: number
+}
+
+export interface Appearance {
+  skin: SkinToneId
+  hair: HairStyleId
+  hairColour: HairColourId
+  outfit: OutfitId
+  accessory: AccessoryId
+}
+
 export type SkillId =
   | 'decrypt'
   | 'override'
@@ -26,6 +47,8 @@ export interface Player {
   skillId: SkillId
   avatar: string
   accent: string
+  /** Drawn character, used for the map token and the roster portrait. */
+  appearance: Appearance
 }
 
 export type StationKind = 'skill' | 'keypad' | 'pattern' | 'terminal'
@@ -46,6 +69,12 @@ export interface StationBase {
   decrypted: string
   /** Station ids that must be solved before this one accepts input. */
   requires: string[]
+  /** Tile the assigned operator has to be standing on. */
+  lockAt: Vec
+  /** Tile a second player has to occupy for the lock to accept input. */
+  clueAt?: Vec
+  /** What the assisting player is looking at from that tile. */
+  clueLabel?: string
 }
 
 export interface SkillStation extends StationBase {
@@ -90,6 +119,10 @@ export interface Level {
   payoff: string
   /** Value this level hands forward to the next one. */
   carryLabel: string
+  /** Where the crew starts this stage. */
+  spawns: Vec[]
+  /** When set, the stage only clears once everyone reaches an extraction pad. */
+  requiresExtraction?: boolean
 }
 
 /**
@@ -129,6 +162,12 @@ export interface LogEntry {
   tone: LogTone
   text: string
   actor?: string
+}
+
+export interface WalkState {
+  playerId: string
+  path: Vec[]
+  index: number
 }
 
 export interface StationRuntime {

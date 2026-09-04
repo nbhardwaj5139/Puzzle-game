@@ -54,6 +54,8 @@ console.log(`chromium: ${executablePath ?? 'playwright default'}`)
 
 async function newPage(options = {}) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, ...options })
+  // Keep every wait short: a hang should surface as a fast, named failure.
+  page.setDefaultTimeout(10_000)
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(`console.error: ${m.text()}`)
@@ -77,6 +79,66 @@ async function buildRoster(page, crew = CREW) {
   await page.getByRole('heading', { name: /Bay 4B, three stages/i }).waitFor()
 }
 
+const TILE = 26
+const MAP_W = 26
+const MAP_H = 14
+
+/** Click a map tile by its grid coordinate. */
+async function clickTile(page, { x, y }) {
+  const map = page.locator('svg[aria-label^="Floor plan"]')
+  // page.mouse works in viewport coordinates and does not auto-scroll.
+  await map.scrollIntoViewIfNeeded()
+  const box = await map.boundingBox()
+  await page.mouse.click(
+    box.x + ((x * TILE + TILE / 2) / (MAP_W * TILE)) * box.width,
+    box.y + ((y * TILE + TILE / 2) / (MAP_H * TILE)) * box.height,
+  )
+}
+
+/**
+ * Take control of a crew member and walk them to a tile, then prove they got
+ * there — a click that never registered must not pass as a completed walk.
+ * A move that can END the stage is driven inline instead (the map unmounts).
+ */
+async function walk(page, name, tile) {
+  await page.getByRole('button', { name: `Control ${name}` }).click()
+  await clickTile(page, tile)
+
+  // The token walks a tile every 95ms; settle once its label stops moving.
+  const label = page
+    .locator('svg[aria-label^="Floor plan"] text')
+    .filter({ hasText: new RegExp(`^${name.slice(0, 8)}$`) })
+    .first()
+  const map = page.locator('svg[aria-label^="Floor plan"]')
+  let previous = null
+  let stable = 0
+  for (let i = 0; i < 90; i += 1) {
+    await page.waitForTimeout(100)
+    const box = await label.boundingBox().catch(() => null)
+    const still =
+      box && previous && Math.abs(box.x - previous.x) < 0.5 && Math.abs(box.y - previous.y) < 0.5
+    // Three still samples span 300ms — comfortably longer than one 95ms step,
+    // so a slow frame mid-walk cannot read as arrival.
+    stable = still ? stable + 1 : 0
+    previous = box
+    if (stable >= 3) {
+      // Settled — now prove the token is actually on the requested tile, so a
+      // click that never registered cannot pass as a completed walk.
+      const mapBox = await map.boundingBox()
+      const scale = mapBox.width / (MAP_W * TILE)
+      const cellX = Math.floor((box.x + box.width / 2 - mapBox.x) / (TILE * scale))
+      const cellY = Math.floor((box.y - mapBox.y) / (TILE * scale))
+      if (cellX !== tile.x || Math.abs(cellY - tile.y) > 1) {
+        throw new Error(
+          `${name} did not reach ${tile.x},${tile.y} — token is around ${cellX},${cellY}`,
+        )
+      }
+      return
+    }
+  }
+  throw new Error(`${name} never finished walking to ${tile.x},${tile.y}`)
+}
+
 async function passGate(page) {
   const gate = page.getByRole('button', { name: /I have the device/i })
   if (await gate.isVisible().catch(() => false)) await gate.click()
@@ -89,30 +151,45 @@ console.log('\nfull campaign clear')
   await buildRoster(page)
   await page.getByRole('button', { name: /Start Level 01/i }).click()
 
-  // L1 — skill station, then the sticky-note keypad
+  // ---- L1: skill panel, then one player at the board and one at the keypad
   await page.getByRole('heading', { name: 'Standup Sync' }).waitFor()
+  await walk(page, 'Priya', { x: 5, y: 7 })          // skill panel operator
   await passGate(page)
   await page.getByRole('button', { name: /spend the charge/i }).click()
+
+  // Focus advances to the keypad on its own once the skill station clears.
+  await page.getByRole('heading', { name: 'Door Keypad' }).waitFor()
+  await walk(page, 'Ada', { x: 3, y: 2 })            // reads the whiteboard
+  await walk(page, 'Marcus', { x: 3, y: 7 })         // types at the keypad
   await passGate(page)
+  step('two players split between the board and the keypad')
+
   for (const d of ['1', '1', '1', '1']) {
     await page.getByRole('button', { name: d, exact: true }).click()
   }
   await page.getByRole('button', { name: /Submit code/i }).click()
   await page.getByText(/rejected that/).first().waitFor()
   step('a wrong code is rejected and penalised')
+
   for (const d of ['7', '3', '0', '9']) {
     await page.getByRole('button', { name: d, exact: true }).click()
   }
   await page.getByRole('button', { name: /Submit code/i }).click()
   await page.getByRole('heading', { name: 'STAGE CLEARED' }).waitFor({ timeout: 5000 })
-  check('level 01 clears on the whiteboard code', true, true)
+  check('level 01 clears with the crew split across two tiles', true, true)
   await page.getByRole('button', { name: /Advance to the next stage/i }).click()
 
-  // L2 — skill station, then the mug-order pattern lock
+  // ---- L2: rack across the kitchen from the pattern panel
   await page.getByRole('heading', { name: 'Cold Brew Protocol' }).waitFor()
+  await walk(page, 'Priya', { x: 8, y: 7 })          // kitchen panel operator
   await passGate(page)
   await page.getByRole('button', { name: /spend the charge/i }).click()
+
+  await page.getByRole('heading', { name: 'Rack Pattern Lock' }).waitFor()
+  await walk(page, 'Ada', { x: 10, y: 2 })           // reads the mug bases
+  await walk(page, 'Marcus', { x: 14, y: 7 })        // traces the pattern
   await passGate(page)
+
   const box = await page.locator('svg.touch-none').boundingBox()
   for (const cell of [0, 1, 4, 7, 8]) {
     await page.mouse.click(
@@ -125,27 +202,51 @@ console.log('\nfull campaign clear')
   check('level 02 clears on the traced mug order', true, true)
   await page.getByRole('button', { name: /Advance to the next stage/i }).click()
 
-  // L3 — terminal chain, including prerequisite gating
+  // ---- L3: terminal plus a runner for each command, then extraction
   await page.getByRole('heading', { name: 'Afterhours Terminal' }).waitFor()
+  await walk(page, 'Priya', { x: 23, y: 7 })         // bay panel operator
   await passGate(page)
   await page.getByRole('button', { name: /spend the charge/i }).click()
 
   async function run(cmd, expect) {
     await passGate(page)
-    const input = page.locator('input[placeholder*="command"]')
+    const input = page.getByLabel('Terminal command')
     await input.click()
     await input.fill(cmd)
     await input.press('Enter')
     if (expect) await page.getByText(expect).first().waitFor({ timeout: 4000 })
   }
-  await run('HELP', /available commands/)
-  await run('EXEC 95', /refused/)
-  step('EXEC is refused before AUTH and MOUNT complete')
+
+  // AUTH: Marcus at the terminal, Priya reading the badge
+  await page.getByRole('heading', { name: 'AUTH' }).waitFor()
+  await walk(page, 'Marcus', { x: 21, y: 2 })
+  await run('EXEC 95', /no session|refused|unverified/)
+  step('EXEC is refused before its prerequisites')
+  await run('AUTH NB-4417', /unverified/)
+  step('AUTH is refused while nobody is at the badge')
+  await walk(page, 'Priya', { x: 18, y: 6 })
   await run('AUTH NB-4417', /accepted/)
+  check('AUTH lands once a runner covers the badge', true, true)
+
+  // MOUNT: Ada at the terminal, Marcus out counting tiles in the corridor
+  await walk(page, 'Ada', { x: 21, y: 2 })
+  await walk(page, 'Marcus', { x: 12, y: 11 })
   await run('MOUNT 12', /accepted/)
+  check('MOUNT lands once a runner reaches the tile run', true, true)
+
+  // EXEC: back to Priya at the terminal, no runner needed
+  await walk(page, 'Priya', { x: 21, y: 2 })
   await run('EXEC 95', null)
-  await page.getByRole('heading', { name: 'STAGE CLEARED' }).waitFor({ timeout: 5000 })
-  check('level 03 clears on the chained checksum', true, true)
+  await page.getByText(/does not close until/i).waitFor({ timeout: 4000 })
+  check('all locks open but the stage stays live for extraction', true, true)
+
+  // ---- extraction: everybody onto a pad
+  await walk(page, 'Priya', { x: 22, y: 11 })
+  await walk(page, 'Ada', { x: 23, y: 11 })
+  await page.getByRole('button', { name: 'Control Marcus' }).click()
+  await clickTile(page, { x: 24, y: 12 })
+  await page.getByRole('heading', { name: 'STAGE CLEARED' }).waitFor({ timeout: 15000 })
+  check('stage 03 clears only when the whole crew reaches the lift', true, true)
 
   await page.getByRole('button', { name: /Walk out of the building/i }).click()
   await page.getByRole('heading', { name: 'ALARM DISARMED' }).waitFor()
@@ -208,8 +309,6 @@ console.log('\nshared-screen mode and mobile layout')
   })
   await buildRoster(page)
   await page.getByRole('button', { name: /Start Level 01/i }).click()
-  await passGate(page)
-  await page.getByRole('button', { name: /spend the charge/i }).click()
   await passGate(page)
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

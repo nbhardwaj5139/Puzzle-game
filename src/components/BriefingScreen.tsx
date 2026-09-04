@@ -5,9 +5,11 @@ import { Button, Chip, Panel, SectionLabel } from './ui/kit'
 import { PlayerTag } from './PlayerTag'
 import { RealityCheckPanel } from './RealityCheckPanel'
 import { WorkspaceScene } from './WorkspaceScene'
+import { FloorMap } from './FloorMap'
 
 const RULES = [
-  ['Two operators minimum', 'Every level splits its locks across different named people. Stations are dealt round-robin when the level starts.'],
+  ['Walk the floor', 'Tap a tile to move the crew member you are holding the device for. Every step costs a second off the clock, so plan the route.'],
+  ['Two operators minimum', 'A checkpoint needs its operator standing on it AND a second player out at the look-here tile. Nobody clears one alone.'],
   ['Look before you type', 'Each lock names a physical thing to inspect. Read it off the bay below, or off your own office if you calibrated it.'],
   ['One charge each, per level', 'Skills reset every level. Unspent charges are worth nothing at the end, so spend them.'],
   ['Misses cost', 'A wrong entry is −50 points and −10 seconds. Hints are −150. Steady Hands absorbs one miss for free.'],
@@ -39,11 +41,22 @@ export function BriefingScreen() {
       </header>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
+          <Panel className="p-4">
+            <SectionLabel>The floor — where you will be walking</SectionLabel>
+            <p className="mt-1.5 mb-3 text-[12px] leading-relaxed text-ink-soft">
+              One floor, three stages. Each checkpoint you clear unseals the door to
+              the next area, so the map is also the progress bar. Solid markers are
+              checkpoints; dashed ones are the look-here tiles a second player has to
+              cover.
+            </p>
+            <FloorMap />
+          </Panel>
+
           <Panel className="p-4">
             <SectionLabel>The bay — this is your inspection surface</SectionLabel>
             <p className="mt-1.5 mb-3 text-[12px] leading-relaxed text-ink-soft">
-              Zoom in and get familiar. You can reopen this at any point during a level,
+              Zoom in and get familiar. You can reopen this at any point during a stage,
               but the clock keeps running while you look.
             </p>
             <WorkspaceScene calibration={calibration} />
@@ -70,7 +83,7 @@ export function BriefingScreen() {
                 </p>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   <Chip accent="#45d0ff">
-                    {level.stations.length} stations
+                    {level.stations.length} checkpoints
                   </Chip>
                   <Chip accent="#ffb43a">↦ {level.carryLabel}</Chip>
                 </div>
@@ -79,7 +92,7 @@ export function BriefingScreen() {
           </div>
         </div>
 
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           <Panel className="p-4">
             <SectionLabel>On shift ({players.length})</SectionLabel>
             <div className="mt-3 space-y-3">

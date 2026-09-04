@@ -1,5 +1,6 @@
 import { getSkill } from '../game/skills'
 import type { Player } from '../game/types'
+import { CharacterAvatar } from './CharacterAvatar'
 
 interface SkillBarProps {
   players: Player[]
@@ -59,9 +60,12 @@ export function SkillBar({
               }
             >
               <div className="flex items-center gap-1.5">
-                <span aria-hidden className="text-sm">
-                  {player.avatar}
-                </span>
+                <CharacterAvatar
+                  appearance={player.appearance}
+                  accent={player.accent}
+                  size="token"
+                  title={player.name}
+                />
                 <span className="truncate text-[11px] font-semibold text-ink">
                   {player.name}
                 </span>

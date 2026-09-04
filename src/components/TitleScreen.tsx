@@ -9,13 +9,13 @@ const BEATS = [
   },
   {
     n: '02',
-    title: 'The answers are in the room',
-    body: 'Sticky notes, mug bases, a badge on a desk, tiles between two pillars. Somebody has to get up and look before anyone can type.',
+    title: 'Walk the floor to the checkpoints',
+    body: 'Move your character around Bay 4B a tile at a time. Every step costs a second, every cleared checkpoint unseals the door to the next area.',
   },
   {
     n: '03',
-    title: 'No level clears with one person',
-    body: 'Every lock is split across at least two named operators. One primes it, another cracks it, and the finale needs both earlier answers.',
+    title: 'Nobody clears a checkpoint alone',
+    body: 'A lock needs its operator standing on it and a second player across the room at the thing they are reading out. Then somebody has to go and actually look at it.',
   },
 ]
 
@@ -28,7 +28,7 @@ export function TitleScreen() {
       <div className="animate-rise">
         <div className="label-caps mb-3 flex items-center gap-2">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-flare" />
-          Local co-op · 2–6 players · one device
+          Local co-op · 2–6 players · one device · one floor
         </div>
         <h1 className="text-5xl leading-[0.95] font-black tracking-tight text-ink sm:text-7xl">
           OVERTIME

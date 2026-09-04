@@ -147,7 +147,7 @@ export function WorkspaceScene({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        className="relative overflow-hidden rounded-xl border border-hairline bg-void"
+        className="relative max-w-full overflow-hidden rounded-xl border border-hairline bg-void"
         style={{ cursor: zoom > 1 ? 'grab' : 'default', touchAction: 'none' }}
       >
         <div

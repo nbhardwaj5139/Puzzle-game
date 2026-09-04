@@ -125,7 +125,8 @@ export function Terminal({ operator, banner, disabled, onCommand }: TerminalProp
             autoComplete="off"
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={disabled ? 'terminal asleep' : 'type a command — HELP for the list'}
+            aria-label="Terminal command"
+            placeholder={disabled ? 'terminal busy' : 'type a command — HELP for the list'}
             className="w-full min-w-0 flex-1 border-none bg-transparent p-0 font-mono text-[12px] text-ink caret-neon placeholder:text-ink-faint/60 focus:outline-none"
           />
         </div>
